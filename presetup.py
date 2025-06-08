@@ -1,14 +1,35 @@
-from subprocess import run, CalledProcessError
+import re
 import sys
-import os
+from subprocess import run, CalledProcessError
 
-SWAP_SIZE = "4G"  # Размер swap-раздела
-ROOT_SIZE = "100%"  # Размер корневого раздела
-HOSTNAME = "myarch"
-ROOT_PASSWORD = "password"
+MIN_DISK_SIZE = 10 * 10 ** 3
+MIN_PRIMARY_SIZE = 5 * 10 ** 3
+EFI_SIZE = 10 ** 3
 
 
-def resolve_target_disk() -> str:
+def parse_size(size: str) -> int:
+    size = size.strip().lower()
+    result = 0
+    sizes = {
+        "kb": 10 ** 3,
+        "mb": 10 ** 6,
+        "gb": 10 ** 9,
+        "tb": 10 ** 12,
+        "kib": 2 ** 10,
+        "mib": 2 ** 20,
+        "gib": 2 ** 30,
+        "tib": 2 ** 40,
+    }
+    try:
+        for suffix, multiplier in sizes.items():
+            if size.endswith(suffix):
+                result = multiplier * int(size[:-(len(suffix))])
+    except ValueError:
+        print(f"Warning: unable to parse size '{size}'")
+    return result // 10 ** 6
+
+
+def resolve_target_disk() -> tuple[str, int]:
     print(f"[1/inf] Disk searching...")
     drive_table = run(["lsblk", "-d", "-o", "name,size,type"], capture_output=True)
     disks = [drive.split()[:-1]
@@ -27,53 +48,84 @@ def resolve_target_disk() -> str:
             break
 
     target_disk = f"/dev/{disks[dnum][0]}"
+    target_disk_size = parse_size(disks[dnum][1])
+    if target_disk_size < MIN_DISK_SIZE:
+        print(f"Error: Target disk size is too small ({target_disk_size}MB). At least {MIN_DISK_SIZE}MB is required.")
+        sys.exit(1)
+
     print(f"WARNING: All data on {target_disk} will be DELETED!")
-    confirm = input("Continue? (y/N): ")
+    confirm = input("Continue? (y/N): ").strip().lower()
     if confirm.lower() != "y":
         sys.exit(1)
 
-    return target_disk
+    return target_disk, target_disk_size
 
 
-def partition_disk(target_disk: str) -> None:
-    print(f"[2/inf] Разметка диска {target_disk}...")
+def validate_swap_size(size: str, target_disk_size: int) -> bool:
+    pattern = re.compile(r"^\d+[KMGT]i?B$", re.IGNORECASE)
+    if size == "0":
+        return True
+    if not pattern.match(size):
+        print("Error: Incorrect swap size format.")
+        print("Examples: 500M, 2G, 4GiB")
+        return False
+    if EFI_SIZE + MIN_PRIMARY_SIZE + parse_size(size) > target_disk_size:
+        print(f"Error: Swap size is too big. "
+              f"Only {target_disk_size - EFI_SIZE - parse_size(size)}MB is allocated for data.")
+        return False
+    return True
+
+
+def partition_disk(target_disk: str, target_disk_size: int) -> bool:
+    print(f"[2/inf] Partition disk {target_disk}...")
+    while True:
+        swap_size = input(f"Enter the size of the swap partition (e.g., 2GiB, 0 to disable): ").strip()
+        if validate_swap_size(swap_size, target_disk_size):
+            break
+
     try:
-        # Создание GPT таблицы
-        run(["parted", target_disk, "mklabel", "gpt"], check=True)
+        run(["parted", target_disk, "mklabel", "gpt"], check=True, input=b"yes\n", capture_output=True)
 
-        # Корневой раздел
-        run([
-            "parted", target_disk, "mkpart", "primary", "ext4", "1MiB", ROOT_SIZE
-        ], check=True)
+        run(["parted", target_disk, "mkpart", "ESP",
+             "fat32", "1MiB", f"{EFI_SIZE}"], check=True, capture_output=True)
+        if swap_size != "0":
+            run(["parted", target_disk, "mkpart", "primary",
+                 "linux-swap", f"{EFI_SIZE}", f"{EFI_SIZE + parse_size(swap_size)}"], check=True, capture_output=True)
+            run(["parted", target_disk, "mkpart", "primary",
+                 "ext4", f"{EFI_SIZE + parse_size(swap_size)}", "100%"], check=True, capture_output=True)
+        else:
+            run(["parted", target_disk, "mkpart", "primary",
+                 "ext4", f"{EFI_SIZE}", "100%"], check=True, capture_output=True)
 
-        # Swap-раздел (если нужно)
-        if SWAP_SIZE != "0":
-            run([
-                "parted", target_disk, "mkpart", "primary", "linux-swap",
-                f"100% -{SWAP_SIZE}", "100%"
-            ], check=True)
+        run(["partprobe"], check=True, capture_output=True)
     except CalledProcessError as e:
-        print(f"Ошибка разметки: {e}")
+        print(f"Error: {e}")
         sys.exit(1)
 
+    return swap_size != "0"
 
-# === Форматирование и монтирование ===
-def format_and_mount():
-    print("[2/6] Форматирование и монтирование...")
-    root_part = f"{target_disk}1"
-    swap_part = f"{target_disk}2" if SWAP_SIZE != "0" else None
+
+def format_and_mount(target_disk: str, has_swap: bool) -> None:
+    print("[3/inf] Formatting and mounting...")
+    efi_part = f"{target_disk}1"
+    if has_swap:
+        swap_part = f"{target_disk}2"
+        root_part = f"{target_disk}3"
+    else:
+        root_part = f"{target_disk}2"
 
     try:
-        # Форматирование корневого раздела
-        run(["mkfs.ext4", root_part], check=True)
-        run(["mount", root_part, "/mnt"], check=True)
+        run(["mkfs.fat", "-F", "32", efi_part], check=True, capture_output=True)
+        run(["mkfs.ext4", root_part], check=True, capture_output=True)
+        run(["mount", root_part, "/mnt"], check=True, capture_output=True)
+        run(["mkdir", "/mnt/boot"], check=True, capture_output=True)
+        run(["mount", efi_part, "/mnt/boot"], check=True, capture_output=True)
 
-        # Создание swap
-        if swap_part:
-            run(["mkswap", swap_part], check=True)
-            run(["swapon", swap_part], check=True)
+        if has_swap:
+            run(["mkswap", swap_part], check=True, capture_output=True)
+            run(["swapon", swap_part], check=True, capture_output=True)
     except CalledProcessError as e:
-        print(f"Ошибка форматирования: {e}")
+        print(f"Error: {e}")
         sys.exit(1)
 
 
@@ -140,9 +192,9 @@ def finish():
 
 
 def presetup() -> None:
-    target_disk = resolve_target_disk()
-    partition_disk(target_disk)
-    # format_and_mount()
+    target_disk, target_disk_size = resolve_target_disk()
+    partition_disk(target_disk, target_disk_size)
+    format_and_mount(target_disk)
     # install_base_system()
     # configure_system()
     # install_grub()
