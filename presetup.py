@@ -88,7 +88,7 @@ def partition_disk(target_disk: str, target_disk_size: int) -> bool:
             break
 
     try:
-        run(["parted", target_disk, "mklabel", "gpt"], check=True, input=b"yes\n", capture_output=True)
+        run(["parted", target_disk, "-s", "mklabel", "gpt"], check=True, capture_output=True)
 
         run(["parted", target_disk, "mkpart", "ESP",
              "fat32", "1MiB", f"{EFI_SIZE}"], check=True, capture_output=True)
