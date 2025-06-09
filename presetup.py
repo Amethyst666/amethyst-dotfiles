@@ -100,8 +100,6 @@ def partition_disk(target_disk: str, target_disk_size: int) -> bool:
         else:
             run(["parted", target_disk, "mkpart", "primary",
                  "ext4", f"{EFI_SIZE}", "100%"], check=True, capture_output=True)
-
-        run(["partprobe"], check=True, capture_output=True)
     except CalledProcessError as e:
         print(f"Error: {e}")
         sys.exit(1)
