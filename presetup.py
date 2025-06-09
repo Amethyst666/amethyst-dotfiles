@@ -52,6 +52,8 @@ def resolve_target_disk() -> tuple[str, int]:
             break
 
     target_disk = f"/dev/{disks[dnum][0]}"
+    if target_disk.startswith("/dev/nme"):
+        target_disk += "p"
     target_disk_size = parse_size(disks[dnum][1])
     if target_disk_size < MIN_DISK_SIZE:
         print(f"Error: Target disk size is too small ({target_disk_size}MB). At least {MIN_DISK_SIZE}MB is required.")
@@ -131,73 +133,7 @@ def format_and_mount(target_disk: str, has_swap: bool) -> None:
         sys.exit(1)
 
 
-# === Установка базовой системы ===
-def install_base_system():
-    print("[3/6] Установка базовой системы...")
-    try:
-        run([
-            "pacstrap", "/mnt", "base", "base-devel", "linux", "linux-firmware",
-            "networkmanager", "vim", "python"
-        ], check=True)
-    except CalledProcessError as e:
-        print(f"Ошибка установки: {e}")
-        sys.exit(1)
-
-
-# === Настройка системы ===
-def configure_system():
-    print("[4/6] Настройка системы...")
-    try:
-        # Генерация fstab
-        run(["genfstab", "-U", "/mnt"], stdout=open("/mnt/etc/fstab", "w"), check=True)
-
-        # Внутренние команды через chroot
-        chroot_commands = [
-            f"echo '{HOSTNAME}' > /etc/hostname",
-            "ln -sf /usr/share/zoneinfo/Europe/Moscow /etc/localtime",
-            "hwclock --systohc",
-            "echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen",
-            "locale-gen",
-            "echo 'LANG=en_US.UTF-8' > /etc/locale.conf",
-            f"echo 'root:{ROOT_PASSWORD}' | chpasswd"
-        ]
-
-        with open("/mnt/root/setup.sh", "w") as f:
-            f.write("#!/bin/bash\n")
-            f.write("\n".join(chroot_commands))
-
-        run(["chmod", "+x", "/mnt/root/setup.sh"], check=True)
-        run(["arch-chroot", "/mnt", "/root/setup.sh"], check=True)
-    except CalledProcessError as e:
-        print(f"Ошибка настройки: {e}")
-        sys.exit(1)
-
-
-# === Установка GRUB ===
-def install_grub():
-    print("[5/6] Установка GRUB...")
-    try:
-        run(["pacstrap", "/mnt", "grub"], check=True)
-        run(["arch-chroot", "/mnt", "grub-install", "--target=i386-pc", target_disk], check=True)
-        run(["arch-chroot", "/mnt", "grub-mkconfig", "-o", "/boot/grub/grub.cfg"], check=True)
-    except CalledProcessError as e:
-        print(f"Ошибка установки GRUB: {e}")
-        sys.exit(1)
-
-
-# === Завершение ===
-def finish():
-    print("[6/6] Установка завершена. Перезагрузите систему.")
-    run(["umount", "-R", "/mnt"], check=True)
-    if SWAP_SIZE != "0":
-        run(["swapoff", "-a"], check=True)
-
-
 def presetup() -> None:
     target_disk, target_disk_size = resolve_target_disk()
     has_swap = partition_disk(target_disk, target_disk_size)
     format_and_mount(target_disk, has_swap)
-    # install_base_system()
-    # configure_system()
-    # install_grub()
-    # finish()
