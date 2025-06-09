@@ -9,22 +9,26 @@ EFI_SIZE = 10 ** 3
 
 def parse_size(size: str) -> int:
     size = size.strip().lower()
+    if size.endswith("b"):
+        size = size[:-1]
     result = 0
     sizes = {
-        "kb": 10 ** 3,
-        "mb": 10 ** 6,
-        "gb": 10 ** 9,
-        "tb": 10 ** 12,
-        "kib": 2 ** 10,
-        "mib": 2 ** 20,
-        "gib": 2 ** 30,
-        "tib": 2 ** 40,
+        "k": 10 ** 3,
+        "m": 10 ** 6,
+        "g": 10 ** 9,
+        "t": 10 ** 12,
+        "ki": 2 ** 10,
+        "mi": 2 ** 20,
+        "gi": 2 ** 30,
+        "ti": 2 ** 40,
     }
     try:
         for suffix, multiplier in sizes.items():
             if size.endswith(suffix):
                 result = multiplier * int(size[:-(len(suffix))])
     except ValueError:
+        pass
+    if result == 0:
         print(f"Warning: unable to parse size '{size}'")
     return result // 10 ** 6
 
