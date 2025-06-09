@@ -195,8 +195,8 @@ def finish():
 
 def presetup() -> None:
     target_disk, target_disk_size = resolve_target_disk()
-    partition_disk(target_disk, target_disk_size)
-    format_and_mount(target_disk)
+    has_swap = partition_disk(target_disk, target_disk_size)
+    format_and_mount(target_disk, has_swap)
     # install_base_system()
     # configure_system()
     # install_grub()
